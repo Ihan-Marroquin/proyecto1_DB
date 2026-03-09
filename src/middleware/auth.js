@@ -1,4 +1,3 @@
-// src/middleware/auth.js
 const jwt = require('jsonwebtoken');
 const { connect } = require('../db');
 const { ObjectId } = require('mongodb');
@@ -43,9 +42,7 @@ async function attachUser(req, res, next) {
   try {
     const user = await getUserFromToken(token);
     if (user) req.user = user;
-  } catch (err) {
-    // ignore
-  }
+  } catch (err) {}
   return next();
 }
 

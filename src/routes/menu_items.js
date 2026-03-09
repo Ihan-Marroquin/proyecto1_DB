@@ -1,50 +1,50 @@
-// src/routes/menu_items.js
 const express = require('express');
-// permitimos mergeParams para leer req.params.restaurantId cuando el router esté montado en /api/restaurants/:restaurantId/menu_items
 const router = express.Router({ mergeParams: true });
 const { connect } = require('../db');
 const { ObjectId, Double } = require('mongodb');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
-/* util: convierte a Double (BSON) para cumplir el validador que pide "double" */
 function toDouble(value) {
   const n = Number(value || 0);
   return new Double(Number.isFinite(n) ? n : 0.0);
 }
 
-/* ---------------------------
-   POST /  (puede usarse como)
-   - POST /api/menu_items            (body.restaurant_id required)
-   - POST /api/restaurants/:restaurantId/menu_items  (restaurantId tomado de URL; body.restaurant_id ignorado)
-   --------------------------- */
 router.post('/', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
-    const requester = req.auth; // { sub, role }
+    const requester = req.auth;
 
     if (!requester || !requester.role) return res.status(401).json({ error: 'Not authenticated' });
 
     const body = req.body || {};
 
-    // Prioridad: restaurantId desde params (cuando se usa ruta anidada)
     const restaurantIdFromUrl = req.params.restaurantId;
-    const restaurant_id = restaurantIdFromUrl || body.restaurant_id;
+    let restaurant_id = restaurantIdFromUrl || body.restaurant_id;
 
     const { name, description, price, currency, categories, tags, ingredients, available, images } = body;
 
-    // Validaciones
+    if ((!restaurant_id || !ObjectId.isValid(restaurant_id)) && requester.role === 'staff') {
+      const myRestaurant = await db
+        .collection('restaurants')
+        .findOne({ owner_id: new ObjectId(requester.sub) });
+
+      if (myRestaurant) {
+        restaurant_id = myRestaurant._id.toString();
+      }
+    }
+
     if (!restaurant_id || !ObjectId.isValid(restaurant_id)) {
-      return res.status(400).json({ error: 'restaurant_id is required and must be valid (or include it in the URL)' });
+      return res.status(400).json({
+        error: 'restaurant_id is required and must be valid (or be resolved for this staff user)'
+      });
     }
     if (!name) return res.status(400).json({ error: 'name is required' });
     if (price === undefined || price === null) return res.status(400).json({ error: 'price is required' });
     if (!currency) return res.status(400).json({ error: 'currency is required' });
 
-    // Verificar restaurante existe
     const restaurant = await db.collection('restaurants').findOne({ _id: new ObjectId(restaurant_id) });
     if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
-    // Permisos: si requester es staff -> debe ser owner del restaurante
     if (requester.role === 'staff') {
       if (!restaurant.owner_id || restaurant.owner_id.toString() !== requester.sub) {
         return res.status(403).json({ error: 'Staff can only manage menu items of their own restaurant' });
@@ -53,7 +53,6 @@ router.post('/', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Only staff (owner) or admin can create menu items' });
     }
 
-    // Construir documento con tipos correctos (price como Double)
     const doc = {
       restaurant_id: new ObjectId(restaurant_id),
       name: String(name),
@@ -70,8 +69,6 @@ router.post('/', requireAuth, async (req, res) => {
 
     const r = await db.collection('menu_items').insertOne(doc);
     const item = await db.collection('menu_items').findOne({ _id: r.insertedId });
-
-    // convertir price Double a number para respuesta JSON
     if (item && item.price && typeof item.price.toNumber === 'function') {
       item.price = item.price.toNumber();
     } else {
@@ -88,16 +85,11 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   GET /  listar menu_items
-   Soporta: restaurant_id (en query) o si se monta en /api/restaurants/:restaurantId/menu_items -> toma de params
-   --------------------------- */
 router.get('/', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
     const { restaurant_id: restaurantIdQuery, q, category, available, skip = 0, limit = 50, sortBy = 'name' } = req.query;
 
-    // Si la ruta es anidada con restaurantId en params, tiene prioridad
     const restaurantIdFromUrl = req.params.restaurantId;
     const restaurant_id = restaurantIdFromUrl || restaurantIdQuery;
 
@@ -116,8 +108,6 @@ router.get('/', requireAuth, async (req, res) => {
     const cursor = db.collection('menu_items').find(query).sort(sorter)
       .skip(parseInt(skip, 10)).limit(Math.min(parseInt(limit, 10), 200));
     const items = await cursor.toArray();
-
-    // convertir price Double a number
     for (const it of items) {
       if (it.price && typeof it.price.toNumber === 'function') it.price = it.price.toNumber();
       else it.price = Number(it.price || 0);
@@ -130,9 +120,6 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   GET /:id - ver item por id
-   --------------------------- */
 router.get('/:id', requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -152,9 +139,6 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   PUT /:id - actualizar item (admin o staff owner)
-   --------------------------- */
 router.put('/:id', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
@@ -198,9 +182,6 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   DELETE /:id - eliminar (admin o staff owner)
-   --------------------------- */
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();

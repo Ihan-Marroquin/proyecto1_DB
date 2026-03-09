@@ -9,6 +9,7 @@ const menuItemsRoutes = require('./routes/menu_items');
 const ordersRoutes = require('./routes/orders');
 const reviewsRoutes = require('./routes/reviews');
 const categoriesRoutes = require('./routes/categories');
+const reportsRoutes = require('./routes/reports');
 
 const app = express();
 app.use(cors());
@@ -24,16 +25,14 @@ const PORT = process.env.PORT || 3000;
 
 async function start() {
   await connect();
-  // routes
   app.use('/api/users', usersRoutes);
   app.use('/api/restaurants', restaurantsRoutes);
-  app.use('/api/restaurants/:restaurantId/menu_items', menuItemsRoutes); // ruta anidada nueva
-  app.use('/api/menu_items', menuItemsRoutes); // consultas globales
+  app.use('/api/restaurants/:restaurantId/menu_items', menuItemsRoutes);
+  app.use('/api/menu_items', menuItemsRoutes);
   app.use('/api/categories', categoriesRoutes);
   app.use('/api/orders', ordersRoutes);
   app.use('/api/reviews', reviewsRoutes);
-  
-  // Escuchar en todas las interfaces para dispositivos en la red
+  app.use('/api/reports', reportsRoutes);
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://0.0.0.0:${PORT}`));
 }
 

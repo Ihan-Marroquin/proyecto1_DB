@@ -1,18 +1,14 @@
-// src/routes/restaurants.js
 const express = require('express');
 const router = express.Router();
 const { connect } = require('../db');
 const { ObjectId, Double, Int32 } = require('mongodb');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireIndex } = require('../lib/requireIndex');
 
-/* ---------------------------
-   Create restaurant
-   --------------------------- */
-// POST /api/restaurants
 router.post('/', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
-    const requester = req.auth; // requireAuth setea req.auth { sub, role }
+    const requester = req.auth;
 
     if (!requester || !requester.role) {
       return res.status(401).json({ error: 'Not authenticated' });
@@ -29,7 +25,6 @@ router.post('/', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'name, location and address are required' });
     }
 
-    // Validate & normalize location (GeoJSON Point, coords: [lng, lat])
     if (typeof location !== 'object' || location.type !== 'Point' || !Array.isArray(location.coordinates) || location.coordinates.length < 2) {
       return res.status(400).json({ error: 'location must be GeoJSON Point with coordinates [lng, lat]' });
     }
@@ -40,7 +35,6 @@ router.post('/', requireAuth, async (req, res) => {
     }
     const normalizedLocation = { type: 'Point', coordinates: [lng, lat] };
 
-    // Validate address object and required fields
     if (typeof address !== 'object') {
       return res.status(400).json({ error: 'address must be an object with street, city, zip' });
     }
@@ -48,12 +42,10 @@ router.post('/', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'address.street, address.city and address.zip are required' });
     }
 
-    // Decide owner_id according to role rules
     let owner_id;
     if (requester.role === 'staff') {
       owner_id = requester.sub;
     } else {
-      // admin -> must provide owner_id
       if (!ownerIdFromBody) return res.status(400).json({ error: 'owner_id is required when creating a restaurant as admin' });
       if (!ObjectId.isValid(ownerIdFromBody)) return res.status(400).json({ error: 'Invalid owner_id' });
 
@@ -63,7 +55,6 @@ router.post('/', requireAuth, async (req, res) => {
       owner_id = ownerIdFromBody;
     }
 
-    // Build document with correct BSON numeric types for rating
     const doc = {
       name,
       description: description || '',
@@ -78,24 +69,12 @@ router.post('/', requireAuth, async (req, res) => {
       hours: typeof hours === 'object' ? hours : {},
       images: Array.isArray(images) ? images : [],
       owner_id: new ObjectId(owner_id),
-      // <-- fuerza tipos BSON requeridos por el validador
       rating: { avg: new Double(0.0), count: new Int32(0) },
       createdAt: new Date(),
       updatedAt: new Date()
     };
 
-    // Debug log (puedes comentar luego)
-    console.log("Inserting restaurant doc (preview):", {
-      name: doc.name,
-      owner_id: doc.owner_id.toString(),
-      ratingAvgType: Object.prototype.toString.call(doc.rating.avg),
-      ratingCountType: Object.prototype.toString.call(doc.rating.count)
-    });
-
-    // insert
     const r = await db.collection('restaurants').insertOne(doc);
-
-    // read back and convert BSON numeric types to plain numbers for JSON
     const restaurant = await db.collection('restaurants').findOne({ _id: r.insertedId });
 
     if (restaurant && restaurant.rating) {
@@ -129,9 +108,6 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   GET / - list restaurants
-   --------------------------- */
 router.get('/', async (req, res) => {
   try {
     const { db } = await connect();
@@ -166,24 +142,29 @@ router.get('/', async (req, res) => {
     if (sortBy === 'rating') sorter['rating.avg'] = -1;
     else if (sortBy === 'createdAt') sorter['createdAt'] = -1;
 
-    const restaurants = await db.collection('restaurants')
+    const coll = db.collection('restaurants');
+    const skipNum = parseInt(skip, 10);
+    const limitNum = Math.min(parseInt(limit, 10), 100);
+    await requireIndex(coll, query, { projection, sort: sorter, skip: skipNum, limit: limitNum });
+
+    const restaurants = await coll
       .find(query)
       .project(projection)
       .sort(sorter)
-      .skip(parseInt(skip, 10))
-      .limit(Math.min(parseInt(limit, 10), 100))
+      .skip(skipNum)
+      .limit(limitNum)
       .toArray();
 
     return res.json(restaurants);
   } catch (err) {
+    if (err.code === 'NO_INDEX') {
+      return res.status(503).json({ error: err.message, code: 'NO_INDEX' });
+    }
     console.error('List restaurants error', err);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-/* ---------------------------
-   GET /:id
-   --------------------------- */
 router.get('/:id', async (req, res) => {
   try {
     const { db } = await connect();
@@ -198,9 +179,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-/* ---------------------------
-   PUT /:id - update
-   --------------------------- */
 router.put('/:id', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
@@ -244,9 +222,6 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   DELETE /:id 
-   --------------------------- */
 router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { db } = await connect();

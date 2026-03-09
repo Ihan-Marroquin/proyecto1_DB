@@ -1,4 +1,3 @@
-// src/routes/reviews.js
 const express = require('express');
 const router = express.Router();
 const { connect } = require('../db');
@@ -63,7 +62,10 @@ router.post('/', requireAuth, async (req, res) => {
       const newAvg = parseFloat(((currentAvg * currentCount + ratingNum) / newCount).toFixed(2));
       await db.collection('restaurants').updateOne(
         { _id: new ObjectId(restaurant_id) },
-        { $set: { 'rating.avg': new Double(newAvg), 'rating.count': new Int32(newCount), updatedAt: new Date() } },
+        {
+          $set: { 'rating.avg': new Double(newAvg), 'rating.count': new Int32(newCount), updatedAt: new Date() },
+          $push: { review_ids: insertedId }
+        },
         { session }
       );
       if (orderObjectId) {
@@ -207,7 +209,10 @@ router.delete('/:id', requireAuth, async (req, res) => {
         : parseFloat(((currentAvg * currentCount - review.rating) / newCount).toFixed(2));
       await db.collection('restaurants').updateOne(
         { _id: review.restaurant_id },
-        { $set: { 'rating.avg': new Double(newAvg), 'rating.count': new Int32(newCount), updatedAt: new Date() } },
+        {
+          $set: { 'rating.avg': new Double(newAvg), 'rating.count': new Int32(newCount), updatedAt: new Date() },
+          $pull: { review_ids: new ObjectId(id) }
+        },
         { session }
       );
       if (review.order_id) {

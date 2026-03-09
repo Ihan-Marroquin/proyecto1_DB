@@ -1,4 +1,3 @@
-// src/routes/users.js
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
@@ -24,9 +23,6 @@ function normalizeAddress(address) {
   return undefined;
 }
 
-/* ---------------------------
-   Test endpoint 
-   --------------------------- */
 router.get('/test', async (req, res) => {
   try {
     const { email, id } = req.query;
@@ -49,9 +45,6 @@ router.get('/test', async (req, res) => {
   }
 });
 
-/* ---------------------------
-   Register regular customer
-   --------------------------- */
 router.post('/register', async (req, res) => {
   try {
     console.log("REGISTER body:", req.body);
@@ -97,9 +90,6 @@ router.post('/register', async (req, res) => {
   }
 });
 
-/* ---------------------------
-   Register staff 
-   --------------------------- */
 router.post('/register/staff', async (req, res) => {
   try {
     console.log("REGISTER STAFF body:", req.body);
@@ -145,9 +135,6 @@ router.post('/register/staff', async (req, res) => {
   }
 });
 
-/* ---------------------------
-   Login 
-   --------------------------- */
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -169,9 +156,67 @@ router.post('/login', async (req, res) => {
   }
 });
 
-/* ---------------------------
-   GET / - list users 
-   --------------------------- */
+router.get('/me', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const userId = req.auth.sub;
+    const user = await db.collection('users').findOne(
+      { _id: new ObjectId(userId) },
+      { projection: { password_hash: 0 } }
+    );
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!Array.isArray(user.favorite_restaurant_ids)) user.favorite_restaurant_ids = [];
+    return res.json(user);
+  } catch (err) {
+    console.error('Get me error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/me/favorites/:restaurantId', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const restaurantId = req.params.restaurantId;
+    if (!ObjectId.isValid(restaurantId)) return res.status(400).json({ error: 'Invalid restaurant_id' });
+    const restaurant = await db.collection('restaurants').findOne({ _id: new ObjectId(restaurantId) });
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
+    await db.collection('users').updateOne(
+      { _id: new ObjectId(req.auth.sub) },
+      { $addToSet: { favorite_restaurant_ids: new ObjectId(restaurantId) } }
+    );
+    const user = await db.collection('users').findOne(
+      { _id: new ObjectId(req.auth.sub) },
+      { projection: { password_hash: 0 } }
+    );
+    if (!Array.isArray(user.favorite_restaurant_ids)) user.favorite_restaurant_ids = [];
+    return res.json(user);
+  } catch (err) {
+    console.error('Add favorite error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.delete('/me/favorites/:restaurantId', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const restaurantId = req.params.restaurantId;
+    if (!ObjectId.isValid(restaurantId)) return res.status(400).json({ error: 'Invalid restaurant_id' });
+    await db.collection('users').updateOne(
+      { _id: new ObjectId(req.auth.sub) },
+      { $pull: { favorite_restaurant_ids: new ObjectId(restaurantId) } }
+    );
+    const user = await db.collection('users').findOne(
+      { _id: new ObjectId(req.auth.sub) },
+      { projection: { password_hash: 0 } }
+    );
+    if (!Array.isArray(user.favorite_restaurant_ids)) user.favorite_restaurant_ids = [];
+    return res.json(user);
+  } catch (err) {
+    console.error('Remove favorite error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 router.get('/', requireAuth, async (req, res) => {
   try {
     const auth = req.headers.authorization || '';
@@ -198,9 +243,6 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   GET /:id 
-   --------------------------- */
 router.get('/:id', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
@@ -222,9 +264,6 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   PUT /:id 
-   --------------------------- */
 router.put('/:id', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
@@ -257,9 +296,6 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   DELETE /:id
-   --------------------------- */
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
@@ -280,9 +316,6 @@ router.delete('/:id', requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------
-   PUT /:id/role
-   --------------------------- */
 router.put('/:id/role', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { role } = req.body;
