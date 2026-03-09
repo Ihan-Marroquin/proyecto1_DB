@@ -6,6 +6,8 @@ const { connect } = require('./db');
 const usersRoutes = require('./routes/users');
 const restaurantsRoutes = require('./routes/restaurants');
 const menuItemsRoutes = require('./routes/menu_items');
+const ordersRoutes = require('./routes/orders');
+const reviewsRoutes = require('./routes/reviews');
 
 const app = express();
 app.use(cors());
@@ -25,6 +27,8 @@ async function start() {
   app.use('/api/users', usersRoutes);
   app.use('/api/restaurants', restaurantsRoutes);
   app.use('/api/restaurants/:restaurantId/menu_items', menuItemsRoutes); // ruta anidada nueva
+  app.use('/api/orders', ordersRoutes);
+  app.use('/api/reviews', reviewsRoutes);
   
   app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 }
