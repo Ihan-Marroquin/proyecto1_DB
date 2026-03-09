@@ -84,4 +84,55 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const { restaurant_id, user_id, rating, q, skip = 0, limit = 20, sortBy = 'createdAt' } = req.query;
+    const query = {};
+    if (restaurant_id) {
+      if (!ObjectId.isValid(restaurant_id)) return res.status(400).json({ error: 'Invalid restaurant_id' });
+      query.restaurant_id = new ObjectId(restaurant_id);
+    }
+    if (user_id) {
+      if (!ObjectId.isValid(user_id)) return res.status(400).json({ error: 'Invalid user_id' });
+      query.user_id = new ObjectId(user_id);
+    }
+    if (rating) {
+      const r = parseInt(rating, 10);
+      if (r < 1 || r > 5) return res.status(400).json({ error: 'rating filter must be 1-5' });
+      query.rating = r;
+    }
+    if (q) query.$text = { $search: q };
+    const sortOptions = {
+      helpful_count: { helpful_count: -1, createdAt: -1 },
+      rating: { rating: -1, createdAt: -1 },
+      createdAt: { createdAt: -1 }
+    };
+    const sorter = sortOptions[sortBy] || sortOptions.createdAt;
+    const reviews = await db.collection('reviews')
+      .find(query).sort(sorter)
+      .skip(parseInt(skip, 10))
+      .limit(Math.min(parseInt(limit, 10), 100))
+      .toArray();
+    return res.json(reviews);
+  } catch (err) {
+    console.error('List reviews error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/:id', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const review = await db.collection('reviews').findOne({ _id: new ObjectId(id) });
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    return res.json(review);
+  } catch (err) {
+    console.error('Get review error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
