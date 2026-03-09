@@ -8,6 +8,7 @@ const restaurantsRoutes = require('./routes/restaurants');
 const menuItemsRoutes = require('./routes/menu_items');
 const ordersRoutes = require('./routes/orders');
 const reviewsRoutes = require('./routes/reviews');
+const categoriesRoutes = require('./routes/categories');
 
 const app = express();
 app.use(cors());
@@ -27,10 +28,13 @@ async function start() {
   app.use('/api/users', usersRoutes);
   app.use('/api/restaurants', restaurantsRoutes);
   app.use('/api/restaurants/:restaurantId/menu_items', menuItemsRoutes); // ruta anidada nueva
+  app.use('/api/menu_items', menuItemsRoutes); // consultas globales
+  app.use('/api/categories', categoriesRoutes);
   app.use('/api/orders', ordersRoutes);
   app.use('/api/reviews', reviewsRoutes);
   
-  app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+  // Escuchar en todas las interfaces para dispositivos en la red
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://0.0.0.0:${PORT}`));
 }
 
 start().catch(err => {
