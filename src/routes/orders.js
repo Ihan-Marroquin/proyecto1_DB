@@ -189,4 +189,43 @@ router.patch('/:id/status', requireAuth, async (req, res) => {
   }
 });
 
+router.delete('/:id', requireAuth, async (req, res) => {
+  const { client, db } = await connect();
+  const session = client.startSession();
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const requester = req.auth;
+    const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    const isAdmin = requester.role === 'admin';
+    const isOwnerCustomer = requester.role === 'customer' && order.user_id.toString() === requester.sub;
+    let isStaffOfRestaurant = false;
+    if (requester.role === 'staff') {
+      const myRestaurant = await db.collection('restaurants').findOne({ owner_id: new ObjectId(requester.sub) });
+      isStaffOfRestaurant = myRestaurant && myRestaurant._id.toString() === order.restaurant_id.toString();
+    }
+    if (!isAdmin && !isOwnerCustomer && !isStaffOfRestaurant) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (!['pending', 'preparing'].includes(order.status)) {
+      return res.status(400).json({ error: `Cannot cancel an order with status '${order.status}'` });
+    }
+    await session.withTransaction(async () => {
+      await db.collection('orders').updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'cancelled', cancelledAt: new Date(), updatedAt: new Date() } },
+        { session }
+      );
+    });
+    const cancelled = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    return res.json(cancelled);
+  } catch (err) {
+    console.error('Cancel order error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    await session.endSession();
+  }
+});
+
 module.exports = router;
