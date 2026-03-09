@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { connect } = require('../db');
-const { ObjectId } = require('mongodb');
+const { ObjectId, Double } = require('mongodb');
 const { requireAuth } = require('../middleware/auth');
 
 function generateOrderNumber() {
@@ -58,21 +58,26 @@ router.post('/', requireAuth, async (req, res) => {
         notes: it.notes || ''
       });
     }
-    const subtotal = resolvedItems.reduce((acc, i) => acc + i.subtotal, 0);
-    const tax = parseFloat((subtotal * TAX_RATE).toFixed(2));
-    const total = parseFloat((subtotal + tax).toFixed(2));
+    const subtotalNum = resolvedItems.reduce((acc, i) => acc + i.subtotal, 0);
+    const taxNum = parseFloat((subtotalNum * TAX_RATE).toFixed(2));
+    const totalNum = parseFloat((subtotalNum + taxNum).toFixed(2));
+
     const doc = {
-      order_number: generateOrderNumber(),
-      user_id: new ObjectId(requester.sub),
-      restaurant_id: new ObjectId(restaurant_id),
-      items: resolvedItems,
-      subtotal, tax, total,
-      status: 'pending',
-      notes,
-      delivery: delivery ? { address: delivery.address || '', eta: delivery.eta ? new Date(delivery.eta) : null } : null,
-      reviewed: false,
-      createdAt: new Date(),
-      updatedAt: new Date()
+        order_number: generateOrderNumber(),
+        user_id: new ObjectId(requester.sub),
+        restaurant_id: new ObjectId(restaurant_id),
+        items: resolvedItems,
+        subtotal: new Double(subtotalNum),
+        tax: new Double(taxNum),
+        total: new Double(totalNum),
+        status: 'pending',
+        notes,
+        delivery: delivery
+            ? { address: delivery.address || '', eta: delivery.eta ? new Date(delivery.eta) : null }
+            : { address: '', eta: null },
+        reviewed: false,
+        createdAt: new Date(),
+        updatedAt: new Date()
     };
     let insertedId;
     await session.withTransaction(async () => {
@@ -83,6 +88,7 @@ router.post('/', requireAuth, async (req, res) => {
     return res.status(201).json(order);
   } catch (err) {
     console.error('Create order error', err);
+    if (err.code === 121) return res.status(400).json({ error: 'Validation failed', details: err.errInfo?.details });
     return res.status(500).json({ error: 'Internal server error' });
   } finally {
     await session.endSession();
