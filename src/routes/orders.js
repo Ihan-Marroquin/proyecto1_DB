@@ -89,4 +89,62 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const requester = req.auth;
+    const { restaurant_id, status, skip = 0, limit = 20, sortBy = 'createdAt' } = req.query;
+    const query = {};
+    if (requester.role === 'customer') {
+      query.user_id = new ObjectId(requester.sub);
+    } else if (requester.role === 'staff') {
+      const myRestaurant = await db.collection('restaurants').findOne({ owner_id: new ObjectId(requester.sub) });
+      if (!myRestaurant) return res.json([]);
+      query.restaurant_id = myRestaurant._id;
+    }
+    if (restaurant_id && requester.role === 'admin') {
+      if (!ObjectId.isValid(restaurant_id)) return res.status(400).json({ error: 'Invalid restaurant_id' });
+      query.restaurant_id = new ObjectId(restaurant_id);
+    }
+    if (status) {
+      if (!VALID_STATUSES.includes(status)) return res.status(400).json({ error: `Invalid status` });
+      query.status = status;
+    }
+    const sorter = sortBy === 'total' ? { total: -1 } : { createdAt: -1 };
+    const orders = await db.collection('orders')
+      .find(query).sort(sorter)
+      .skip(parseInt(skip, 10))
+      .limit(Math.min(parseInt(limit, 10), 100))
+      .toArray();
+    return res.json(orders);
+  } catch (err) {
+    console.error('List orders error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/:id', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const requester = req.auth;
+    const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (requester.role === 'customer' && order.user_id.toString() !== requester.sub) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (requester.role === 'staff') {
+      const myRestaurant = await db.collection('restaurants').findOne({ owner_id: new ObjectId(requester.sub) });
+      if (!myRestaurant || myRestaurant._id.toString() !== order.restaurant_id.toString()) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+    return res.json(order);
+  } catch (err) {
+    console.error('Get order error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
