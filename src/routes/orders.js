@@ -147,4 +147,46 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
+router.patch('/:id/status', requireAuth, async (req, res) => {
+  const { client, db } = await connect();
+  const session = client.startSession();
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const requester = req.auth;
+    if (requester.role === 'customer') return res.status(403).json({ error: 'Customers cannot update order status' });
+    const { status } = req.body;
+    if (!status || !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
+    }
+    const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (order.status === 'delivered' || order.status === 'cancelled') {
+      return res.status(400).json({ error: `Cannot change status of a ${order.status} order` });
+    }
+    if (requester.role === 'staff') {
+      const myRestaurant = await db.collection('restaurants').findOne({ owner_id: new ObjectId(requester.sub) });
+      if (!myRestaurant || myRestaurant._id.toString() !== order.restaurant_id.toString()) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+    const updateFields = { status, updatedAt: new Date() };
+    if (status === 'delivered') updateFields.deliveredAt = new Date();
+    await session.withTransaction(async () => {
+      await db.collection('orders').updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateFields },
+        { session }
+      );
+    });
+    const updated = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    return res.json(updated);
+  } catch (err) {
+    console.error('Update order status error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    await session.endSession();
+  }
+});
+
 module.exports = router;
