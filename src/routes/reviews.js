@@ -135,4 +135,96 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
+router.put('/:id', requireAuth, async (req, res) => {
+  const { client, db } = await connect();
+  const session = client.startSession();
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const requester = req.auth;
+    const review = await db.collection('reviews').findOne({ _id: new ObjectId(id) });
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    const isAdmin = requester.role === 'admin';
+    const isAuthor = review.user_id.toString() === requester.sub;
+    if (!isAdmin && !isAuthor) return res.status(403).json({ error: 'Forbidden' });
+    const body = req.body || {};
+    const update = {};
+    if ('title' in body) update.title = String(body.title);
+    if ('comment' in body) update.comment = String(body.comment);
+    if ('images' in body) update.images = Array.isArray(body.images) ? body.images : [];
+    let newRating = null;
+    if ('rating' in body) {
+      newRating = Number(body.rating);
+      if (newRating < 1 || newRating > 5) return res.status(400).json({ error: 'rating must be 1-5' });
+      update.rating = newRating;
+    }
+    update.editedAt = new Date();
+    await session.withTransaction(async () => {
+      await db.collection('reviews').updateOne({ _id: new ObjectId(id) }, { $set: update }, { session });
+      if (newRating !== null && newRating !== review.rating) {
+        const restaurant = await db.collection('restaurants').findOne({ _id: review.restaurant_id }, { session });
+        const currentAvg = typeof restaurant.rating?.avg?.toNumber === 'function'
+          ? restaurant.rating.avg.toNumber() : Number(restaurant.rating?.avg || 0);
+        const currentCount = Number(restaurant.rating?.count || 1);
+        const newAvg = parseFloat(((currentAvg * currentCount - review.rating + newRating) / currentCount).toFixed(2));
+        await db.collection('restaurants').updateOne(
+          { _id: review.restaurant_id },
+          { $set: { 'rating.avg': new Double(newAvg), updatedAt: new Date() } },
+          { session }
+        );
+      }
+    });
+    const updated = await db.collection('reviews').findOne({ _id: new ObjectId(id) });
+    return res.json(updated);
+  } catch (err) {
+    console.error('Update review error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    await session.endSession();
+  }
+});
+
+router.delete('/:id', requireAuth, async (req, res) => {
+  const { client, db } = await connect();
+  const session = client.startSession();
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const requester = req.auth;
+    const review = await db.collection('reviews').findOne({ _id: new ObjectId(id) });
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    const isAdmin = requester.role === 'admin';
+    const isAuthor = review.user_id.toString() === requester.sub;
+    if (!isAdmin && !isAuthor) return res.status(403).json({ error: 'Forbidden' });
+    await session.withTransaction(async () => {
+      await db.collection('reviews').deleteOne({ _id: new ObjectId(id) }, { session });
+      const restaurant = await db.collection('restaurants').findOne({ _id: review.restaurant_id }, { session });
+      const currentCount = Number(restaurant.rating?.count || 1);
+      const currentAvg = typeof restaurant.rating?.avg?.toNumber === 'function'
+        ? restaurant.rating.avg.toNumber() : Number(restaurant.rating?.avg || 0);
+      const newCount = Math.max(0, currentCount - 1);
+      const newAvg = newCount === 0 ? 0.0
+        : parseFloat(((currentAvg * currentCount - review.rating) / newCount).toFixed(2));
+      await db.collection('restaurants').updateOne(
+        { _id: review.restaurant_id },
+        { $set: { 'rating.avg': new Double(newAvg), 'rating.count': new Int32(newCount), updatedAt: new Date() } },
+        { session }
+      );
+      if (review.order_id) {
+        await db.collection('orders').updateOne(
+          { _id: review.order_id },
+          { $set: { reviewed: false, updatedAt: new Date() } },
+          { session }
+        );
+      }
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Delete review error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    await session.endSession();
+  }
+});
+
 module.exports = router;
