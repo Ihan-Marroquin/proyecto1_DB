@@ -227,4 +227,27 @@ router.delete('/:id', requireAuth, async (req, res) => {
   }
 });
 
+router.post('/:id/helpful', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const requester = req.auth;
+    const review = await db.collection('reviews').findOne({ _id: new ObjectId(id) });
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    if (review.user_id.toString() === requester.sub) {
+      return res.status(400).json({ error: 'You cannot mark your own review as helpful' });
+    }
+    await db.collection('reviews').updateOne(
+      { _id: new ObjectId(id) },
+      { $inc: { helpful_count: 1 } }
+    );
+    const updated = await db.collection('reviews').findOne({ _id: new ObjectId(id) });
+    return res.json(updated);
+  } catch (err) {
+    console.error('Helpful review error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
