@@ -4,8 +4,6 @@ const { connect } = require('../db');
 const { ObjectId } = require('mongodb');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
-const VALID_STATUSES = ['pending', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
-
 function normalizeRestaurant(doc) {
   if (!doc) return null;
   const d = { ...doc };
@@ -130,86 +128,106 @@ router.get('/top-dishes', async (req, res) => {
   }
 });
 
-router.get('/admin-stats', requireAuth, requireAdmin, async (req, res) => {
+// ── 3. Ingresos diarios por restaurante — últimos 30 días ─────────────────────
+router.get('/daily-revenue', async (req, res) => {
   try {
     const { db } = await connect();
-    const [users, restaurants, orders] = await Promise.all([
-      db.collection('users').countDocuments(),
-      db.collection('restaurants').countDocuments(),
-      db.collection('orders').countDocuments()
-    ]);
-    return res.json({ users, restaurants, orders });
-  } catch (err) {
-    console.error('Admin stats error', err);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-});
+    const since = new Date();
+    since.setDate(since.getDate() - 30);
 
-router.get('/restaurant-orders-summary', requireAuth, async (req, res) => {
-  try {
-    const { db } = await connect();
-    const requester = req.auth;
-    let restaurantId = req.query.restaurant_id;
-    if (requester.role === 'staff') {
-      const myRestaurant = await db.collection('restaurants').findOne({ owner_id: new ObjectId(requester.sub) });
-      if (!myRestaurant) return res.json({ byStatus: {}, byDay: [] });
-      restaurantId = myRestaurant._id.toString();
-    } else if (requester.role !== 'admin' || !restaurantId || !ObjectId.isValid(restaurantId)) {
-      return res.status(400).json({ error: 'restaurant_id required for admin' });
-    }
-    const matchRestaurant = { restaurant_id: new ObjectId(restaurantId) };
-    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
-
-    const byStatusPipeline = [
-      { $match: matchRestaurant },
-      { $group: { _id: '$status', count: { $sum: 1 } } }
-    ];
-    const byDayPipeline = [
-      { $match: matchRestaurant },
-      {
-        $addFields: {
-          date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }
-        }
-      },
+    const pipeline = [
+      { $match: { createdAt: { $gte: since }, status: { $ne: 'cancelled' } } },
       {
         $group: {
-          _id: { date: '$date', status: '$status' },
-          count: { $sum: 1 }
+          _id: {
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            restaurant: '$restaurant_id'
+          },
+          dailyRevenue: { $sum: '$total' },
+          orders: { $sum: 1 }
         }
       },
-      { $sort: { '_id.date': -1 } },
-      { $limit: days * 5 }
+      { $sort: { '_id.day': -1 } },
+      {
+        $lookup: {
+          from: 'restaurants',
+          localField: '_id.restaurant',
+          foreignField: '_id',
+          as: 'restaurant'
+        }
+      },
+      { $unwind: '$restaurant' },
+      {
+        $project: {
+          _id: 0,
+          day: '$_id.day',
+          restaurant_id: '$_id.restaurant',
+          restaurant: '$restaurant.name',
+          dailyRevenue: { $round: ['$dailyRevenue', 2] },
+          orders: 1
+        }
+      }
     ];
 
-    const [byStatusResult, byDayResult] = await Promise.all([
-      db.collection('orders').aggregate(byStatusPipeline).toArray(),
-      db.collection('orders').aggregate(byDayPipeline).toArray()
-    ]);
-
-    const byStatus = {};
-    VALID_STATUSES.forEach(s => { byStatus[s] = 0; });
-    byStatusResult.forEach((r) => { byStatus[r._id] = r.count; });
-
-    const dayMap = {};
-    byDayResult.forEach((r) => {
-      const d = r._id.date;
-      const st = r._id.status;
-      if (!dayMap[d]) {
-        dayMap[d] = { date: d, total: 0, byStatus: {} };
-        VALID_STATUSES.forEach(s => { dayMap[d].byStatus[s] = 0; });
-      }
-      dayMap[d].total += r.count;
-      dayMap[d].byStatus[st] = (dayMap[d].byStatus[st] || 0) + r.count;
-    });
-    const byDay = Object.values(dayMap).sort((a, b) => b.date.localeCompare(a.date));
-
-    return res.json({ byStatus, byDay });
+    const result = await db.collection('orders').aggregate(pipeline).toArray();
+    const list = result.map(r => ({
+      ...r,
+      restaurant_id: r.restaurant_id?.toString?.() ?? String(r.restaurant_id)
+    }));
+    return res.json(list);
   } catch (err) {
-    console.error('Restaurant orders summary error', err);
+    console.error('Daily revenue report error', err);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+// ── 4. Reseñas con mayor helpful_count + text search ─────────────────────────
+router.get('/top-reviews', async (req, res) => {
+  try {
+    const { db } = await connect();
+    const { q, limit: limitQ = 10 } = req.query;
+    const limit = Math.min(parseInt(limitQ, 10) || 10, 50);
+
+    const matchStage = {};
+    if (q) matchStage.$text = { $search: String(q) };
+
+    const pipeline = [
+      ...(Object.keys(matchStage).length ? [{ $match: matchStage }] : []),
+      { $sort: { helpful_count: -1, createdAt: -1 } },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'user_id',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          rating: 1,
+          title: 1,
+          comment: 1,
+          helpful_count: 1,
+          createdAt: 1,
+          restaurant_id: 1,
+          order_id: 1,
+          'user.name': 1,
+          'user._id': 1
+        }
+      }
+    ];
+
+    const result = await db.collection('reviews').aggregate(pipeline).toArray();
+    return res.json(result);
+  } catch (err) {
+    console.error('Top reviews report error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── 5. Explain (admin only) ───────────────────────────────────────────────────
 router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { db } = await connect();
@@ -228,12 +246,7 @@ router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
         { $sort: { avgRating: -1 } },
         { $limit: 10 }
       ];
-      result = await db.command({
-        aggregate: 'orders',
-        pipeline,
-        cursor: {},
-        explain: true
-      });
+      result = await db.collection('reviews').aggregate(pipeline).explain('executionStats');
     } else if (queryName === 'top_dishes') {
       const pipeline = [
         { $match: { status: { $ne: 'cancelled' } } },
@@ -242,12 +255,18 @@ router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
         { $sort: { totalQuantity: -1 } },
         { $limit: 10 }
       ];
-      result = await db.command({
-        aggregate: 'orders',
-        pipeline,
-        cursor: {},
-        explain: true
-      });
+      result = await db.collection('orders').aggregate(pipeline).explain('executionStats');
+    } else if (queryName === 'daily_revenue') {
+      const since = new Date(); since.setDate(since.getDate() - 30);
+      const pipeline = [
+        { $match: { createdAt: { $gte: since }, status: { $ne: 'cancelled' } } },
+        { $group: { _id: { day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, restaurant: '$restaurant_id' }, dailyRevenue: { $sum: '$total' }, orders: { $sum: 1 } } },
+        { $sort: { '_id.day': -1 } }
+      ];
+      result = await db.collection('orders').aggregate(pipeline).explain('executionStats');
+    } else if (queryName === 'top_reviews') {
+      const cursor = db.collection('reviews').find({}).sort({ helpful_count: -1, createdAt: -1 }).limit(10);
+      result = await cursor.explain('executionStats');
     } else if (queryName === 'restaurants_list') {
       const cursor = db.collection('restaurants').find({}).sort({ 'rating.avg': -1 }).limit(20);
       result = await cursor.explain('executionStats');
