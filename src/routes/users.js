@@ -3,8 +3,29 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { connect } = require('../db');
-const { ObjectId } = require('mongodb');
+const { ObjectId, GridFSBucket } = require('mongodb');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
+
+const UPLOAD_FILES = 'upload.files';
+
+function getBaseUrl(req) {
+  const protocol = req.protocol || 'https';
+  const host = req.get('host') || '';
+  return host ? `${protocol}://${host}` : (process.env.BASE_URL || '');
+}
+
+async function enrichUserWithAvatar(db, user, baseUrl) {
+  if (!user || !baseUrl) return;
+  const userId = user._id.toString();
+  const file = await db.collection(UPLOAD_FILES).findOne(
+    { 'metadata.uploadedBy': userId },
+    { sort: { uploadDate: -1 } }
+  );
+  if (file) {
+    user.image = `${baseUrl}/api/users/${userId}/avatar`;
+    user.url = user.image;
+  }
+}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
@@ -149,6 +170,7 @@ router.post('/login', async (req, res) => {
 
     const token = jwt.sign({ sub: user._id.toString(), role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 
+    await enrichUserWithAvatar(db, user, getBaseUrl(req));
     return res.json({ user: stripUser(user), token });
   } catch (err) {
     console.error('Login error', err);
@@ -166,6 +188,7 @@ router.get('/me', requireAuth, async (req, res) => {
     );
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!Array.isArray(user.favorite_restaurant_ids)) user.favorite_restaurant_ids = [];
+    await enrichUserWithAvatar(db, user, getBaseUrl(req));
     return res.json(user);
   } catch (err) {
     console.error('Get me error', err);
@@ -189,6 +212,7 @@ router.post('/me/favorites/:restaurantId', requireAuth, async (req, res) => {
       { projection: { password_hash: 0 } }
     );
     if (!Array.isArray(user.favorite_restaurant_ids)) user.favorite_restaurant_ids = [];
+    await enrichUserWithAvatar(db, user, getBaseUrl(req));
     return res.json(user);
   } catch (err) {
     console.error('Add favorite error', err);
@@ -210,10 +234,36 @@ router.delete('/me/favorites/:restaurantId', requireAuth, async (req, res) => {
       { projection: { password_hash: 0 } }
     );
     if (!Array.isArray(user.favorite_restaurant_ids)) user.favorite_restaurant_ids = [];
+    await enrichUserWithAvatar(db, user, getBaseUrl(req));
     return res.json(user);
   } catch (err) {
     console.error('Remove favorite error', err);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/:id/avatar', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    if (!userId) return res.status(400).json({ error: 'User id required' });
+    const { db } = await connect();
+    const file = await db.collection(UPLOAD_FILES).findOne(
+      { 'metadata.uploadedBy': userId },
+      { sort: { uploadDate: -1 } }
+    );
+    if (!file) return res.status(404).end();
+    const bucket = new GridFSBucket(db, { bucketName: 'upload' });
+    const mimetype = file.metadata?.mimetype || file.contentType || 'application/octet-stream';
+    res.setHeader('Content-Type', mimetype);
+    const stream = bucket.openDownloadStream(file._id);
+    stream.on('error', (err) => {
+      console.error('Avatar stream error', err);
+      if (!res.headersSent) res.status(500).json({ error: 'Error streaming file' });
+    });
+    stream.pipe(res);
+  } catch (err) {
+    console.error('Avatar endpoint error', err);
+    if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -229,12 +279,15 @@ router.get('/', requireAuth, async (req, res) => {
     }
 
     const { db } = await connect();
+    const baseUrl = getBaseUrl(req);
     if (!isAdmin) {
       const payload = jwt.verify(token, JWT_SECRET);
       const u = await db.collection('users').findOne({ _id: new ObjectId(payload.sub) });
+      await enrichUserWithAvatar(db, u, baseUrl);
       return res.json([stripUser(u)]);
     } else {
       const users = await db.collection('users').find().project({ password_hash: 0 }).toArray();
+      for (const u of users) await enrichUserWithAvatar(db, u, baseUrl);
       return res.json(users);
     }
   } catch (err) {
@@ -257,6 +310,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 
     const user = await db.collection('users').findOne({ _id: new ObjectId(targetId) }, { projection: { password_hash: 0 } });
     if (!user) return res.status(404).json({ error: 'User not found' });
+    await enrichUserWithAvatar(db, user, getBaseUrl(req));
     return res.json(user);
   } catch (err) {
     console.error(err);
@@ -289,6 +343,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 
     await db.collection('users').updateOne({ _id: new ObjectId(targetId) }, { $set: update });
     const user = await db.collection('users').findOne({ _id: new ObjectId(targetId) }, { projection: { password_hash: 0 } });
+    await enrichUserWithAvatar(db, user, getBaseUrl(req));
     return res.json(user);
   } catch (err) {
     console.error(err);
