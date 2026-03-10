@@ -6,7 +6,7 @@ const { connect } = require('../db');
 const { ObjectId, GridFSBucket } = require('mongodb');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
-const UPLOAD_FILES = 'upload.files';
+const UPLOAD_FILES = 'uploads.files';
 
 function getBaseUrl(req) {
   const protocol = req.protocol || 'https';
@@ -252,7 +252,7 @@ router.get('/:id/avatar', async (req, res) => {
       { sort: { uploadDate: -1 } }
     );
     if (!file) return res.status(404).end();
-    const bucket = new GridFSBucket(db, { bucketName: 'upload' });
+    const bucket = new GridFSBucket(db, { bucketName: 'uploads' });
     const mimetype = file.metadata?.mimetype || file.contentType || 'application/octet-stream';
     res.setHeader('Content-Type', mimetype);
     const stream = bucket.openDownloadStream(file._id);
