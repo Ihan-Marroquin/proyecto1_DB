@@ -227,7 +227,26 @@ router.get('/top-reviews', async (req, res) => {
   }
 });
 
-// ── 5. Explain (admin only) ───────────────────────────────────────────────────
+router.get('/admin-stats', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const countPipeline = [{ $count: 'total' }];
+    const [usersRes, restaurantsRes, ordersRes] = await Promise.all([
+      db.collection('users').aggregate(countPipeline).toArray(),
+      db.collection('restaurants').aggregate(countPipeline).toArray(),
+      db.collection('orders').aggregate(countPipeline).toArray(),
+    ]);
+    const users = usersRes[0]?.total ?? 0;
+    const restaurants = restaurantsRes[0]?.total ?? 0;
+    const orders = ordersRes[0]?.total ?? 0;
+    return res.json({ users, restaurants, orders });
+  } catch (err) {
+    console.error('Admin stats error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── 6. Explain (admin only) ───────────────────────────────────────────────────
 router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { db } = await connect();
