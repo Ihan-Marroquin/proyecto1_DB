@@ -13,21 +13,31 @@ function normalizeRestaurant(doc) {
   if (d.owner_id) d.owner_id = d.owner_id.toString();
   if (d.rating) {
     d.rating = {
-      avg: typeof d.rating.avg === 'number' ? d.rating.avg : (d.rating.avg && typeof d.rating.avg.toNumber === 'function' ? d.rating.avg.toNumber() : 0),
-      count: typeof d.rating.count === 'number' ? d.rating.count : (d.rating.count != null ? Number(d.rating.count) : 0)
+      avg: typeof d.rating.avg === 'number' ? d.rating.avg
+        : (d.rating.avg && typeof d.rating.avg.toNumber === 'function' ? d.rating.avg.toNumber() : 0),
+      count: typeof d.rating.count === 'number' ? d.rating.count
+        : (d.rating.count != null ? Number(d.rating.count) : 0)
     };
   }
   return d;
 }
 
+// ── 1. Top restaurantes por RATING PROMEDIO (mín. 5 reseñas) ──────────────────
 router.get('/top-restaurants', async (req, res) => {
   try {
     const { db } = await connect();
     const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
     const pipeline = [
-      { $match: { status: { $ne: 'cancelled' } } },
-      { $group: { _id: '$restaurant_id', orderCount: { $sum: 1 } } },
-      { $sort: { orderCount: -1 } },
+      { $match: { rating: { $exists: true } } },
+      {
+        $group: {
+          _id: '$restaurant_id',
+          avgRating: { $avg: '$rating' },
+          count: { $sum: 1 }
+        }
+      },
+      { $match: { count: { $gte: 5 } } },
+      { $sort: { avgRating: -1, count: -1 } },
       { $limit: limit },
       {
         $lookup: {
@@ -49,17 +59,17 @@ router.get('/top-restaurants', async (req, res) => {
           phone: '$restaurant.phone',
           hours: '$restaurant.hours',
           images: '$restaurant.images',
-          rating: '$restaurant.rating',
           createdAt: '$restaurant.createdAt',
-          updatedAt: '$restaurant.updatedAt',
-          orderCount: 1
+          avgRating: { $round: ['$avgRating', 2] },
+          reviewCount: '$count'
         }
       }
     ];
-    const result = await db.collection('orders').aggregate(pipeline).toArray();
-    const list = result.map((r) => ({
+    const result = await db.collection('reviews').aggregate(pipeline).toArray();
+    const list = result.map(r => ({
       ...normalizeRestaurant(r),
-      orderCount: r.orderCount
+      avgRating: r.avgRating,
+      reviewCount: r.reviewCount
     }));
     return res.json(list);
   } catch (err) {
@@ -68,6 +78,7 @@ router.get('/top-restaurants', async (req, res) => {
   }
 });
 
+// ── 2. Platos más vendidos ────────────────────────────────────────────────────
 router.get('/top-dishes', async (req, res) => {
   try {
     const { db } = await connect();
@@ -104,12 +115,13 @@ router.get('/top-dishes', async (req, res) => {
       }
     ];
     const result = await db.collection('orders').aggregate(pipeline).toArray();
-    const list = result.map((r) => ({
-      menu_item_id: r.menu_item_id && r.menu_item_id.toString ? r.menu_item_id.toString() : String(r.menu_item_id),
+    const list = result.map(r => ({
+      menu_item_id: r.menu_item_id?.toString?.() ?? String(r.menu_item_id),
       name: r.name,
       totalQuantity: r.totalQuantity,
-      price: r.price != null && typeof r.price?.toNumber === 'function' ? r.price.toNumber() : Number(r.price || 0),
-      restaurant_id: r.restaurant_id && r.restaurant_id.toString ? r.restaurant_id.toString() : (r.restaurant_id || null)
+      price: r.price != null && typeof r.price?.toNumber === 'function'
+        ? r.price.toNumber() : Number(r.price || 0),
+      restaurant_id: r.restaurant_id?.toString?.() ?? (r.restaurant_id || null)
     }));
     return res.json(list);
   } catch (err) {
@@ -202,20 +214,18 @@ router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { db } = await connect();
     const { query: queryName } = req.query;
-    const allowed = ['top_restaurants', 'top_dishes', 'restaurants_list', 'orders_list'];
+    const allowed = ['top_restaurants', 'top_dishes', 'daily_revenue', 'top_reviews', 'restaurants_list', 'orders_list'];
     if (!queryName || !allowed.includes(queryName)) {
-      return res.status(400).json({
-        error: 'query param required',
-        allowed: allowed.join(', ')
-      });
+      return res.status(400).json({ error: 'query param required', allowed: allowed.join(', ') });
     }
 
     let result;
     if (queryName === 'top_restaurants') {
       const pipeline = [
-        { $match: { status: { $ne: 'cancelled' } } },
-        { $group: { _id: '$restaurant_id', orderCount: { $sum: 1 } } },
-        { $sort: { orderCount: -1 } },
+        { $match: { rating: { $exists: true } } },
+        { $group: { _id: '$restaurant_id', avgRating: { $avg: '$rating' }, count: { $sum: 1 } } },
+        { $match: { count: { $gte: 5 } } },
+        { $sort: { avgRating: -1 } },
         { $limit: 10 }
       ];
       result = await db.command({
@@ -246,10 +256,7 @@ router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
       result = await cursor.explain('executionStats');
     }
 
-    return res.json({
-      query: queryName,
-      explain: result,
-    });
+    return res.json({ query: queryName, explain: result });
   } catch (err) {
     console.error('Explain endpoint error', err);
     return res.status(500).json({ error: 'Internal server error' });

@@ -17,7 +17,7 @@ function generateOrderNumber() {
   return `ORD-${date}-${rand}`;
 }
 
-const VALID_STATUSES = ['pending', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
+const VALID_STATUSES = ['pending', 'preparing', 'out_for_delivery', 'delivered', 'cancelled', 'paid'];
 const TAX_RATE = 0.07;
 
 function orderToJson(order) {
@@ -276,6 +276,70 @@ router.delete('/:id', requireAuth, async (req, res) => {
     return res.json(orderToJson(cancelled));
   } catch (err) {
     console.error('Cancel order error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    await session.endSession();
+  }
+});
+
+// ── Procesar pago ─────────────────────────────────────────────────────────────
+router.patch('/:id/pay', requireAuth, async (req, res) => {
+  const { client, db } = await connect();
+  const session = client.startSession();
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+
+    const requester = req.auth;
+    const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    if (requester.role === 'customer' && order.user_id.toString() !== requester.sub) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (requester.role === 'staff') {
+      return res.status(403).json({ error: 'Staff cannot process payments' });
+    }
+
+    if (order.status === 'paid') {
+      return res.status(400).json({ error: 'Order is already paid' });
+    }
+    if (['cancelled', 'delivered'].includes(order.status)) {
+      return res.status(400).json({ error: `Cannot pay an order with status '${order.status}'` });
+    }
+
+    const { payment_method = 'card', reference = null } = req.body || {};
+
+    const paymentRecord = {
+      order_id: new ObjectId(id),
+      user_id: new ObjectId(requester.sub),
+      amount: order.total,
+      payment_method: String(payment_method),
+      reference: reference ? String(reference) : null,
+      status: 'confirmed',
+      createdAt: new Date()
+    };
+
+    await session.withTransaction(async () => {
+      await db.collection('payments').insertOne(paymentRecord, { session });
+      await db.collection('orders').updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            status: 'paid',
+            paidAt: new Date(),
+            updatedAt: new Date(),
+            payment_method: String(payment_method)
+          }
+        },
+        { session }
+      );
+    });
+
+    const updated = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    return res.json(orderToJson(updated));
+  } catch (err) {
+    console.error('Pay order error', err);
     return res.status(500).json({ error: 'Internal server error' });
   } finally {
     await session.endSession();
