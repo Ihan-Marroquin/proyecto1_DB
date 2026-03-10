@@ -135,7 +135,7 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const { db } = await connect();
     const requester = req.auth;
-    const { restaurant_id, status, skip = 0, limit = 20, sortBy = 'createdAt' } = req.query;
+    const { restaurant_id, status, date, skip = 0, limit = 20, sortBy = 'createdAt' } = req.query;
     const query = {};
     if (requester.role === 'customer') {
       query.user_id = new ObjectId(requester.sub);
@@ -151,6 +151,11 @@ router.get('/', requireAuth, async (req, res) => {
     if (status) {
       if (!VALID_STATUSES.includes(status)) return res.status(400).json({ error: `Invalid status` });
       query.status = status;
+    }
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const start = new Date(date + 'T00:00:00.000Z');
+      const end = new Date(date + 'T23:59:59.999Z');
+      query.createdAt = { $gte: start, $lte: end };
     }
     const sorter = sortBy === 'total' ? { total: -1 } : { createdAt: -1 };
     const coll = db.collection('orders');

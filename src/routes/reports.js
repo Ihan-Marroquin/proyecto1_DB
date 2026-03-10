@@ -4,6 +4,8 @@ const { connect } = require('../db');
 const { ObjectId } = require('mongodb');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
+const VALID_STATUSES = ['pending', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
+
 function normalizeRestaurant(doc) {
   if (!doc) return null;
   const d = { ...doc };
@@ -116,6 +118,86 @@ router.get('/top-dishes', async (req, res) => {
   }
 });
 
+router.get('/admin-stats', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const [users, restaurants, orders] = await Promise.all([
+      db.collection('users').countDocuments(),
+      db.collection('restaurants').countDocuments(),
+      db.collection('orders').countDocuments()
+    ]);
+    return res.json({ users, restaurants, orders });
+  } catch (err) {
+    console.error('Admin stats error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/restaurant-orders-summary', requireAuth, async (req, res) => {
+  try {
+    const { db } = await connect();
+    const requester = req.auth;
+    let restaurantId = req.query.restaurant_id;
+    if (requester.role === 'staff') {
+      const myRestaurant = await db.collection('restaurants').findOne({ owner_id: new ObjectId(requester.sub) });
+      if (!myRestaurant) return res.json({ byStatus: {}, byDay: [] });
+      restaurantId = myRestaurant._id.toString();
+    } else if (requester.role !== 'admin' || !restaurantId || !ObjectId.isValid(restaurantId)) {
+      return res.status(400).json({ error: 'restaurant_id required for admin' });
+    }
+    const matchRestaurant = { restaurant_id: new ObjectId(restaurantId) };
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
+
+    const byStatusPipeline = [
+      { $match: matchRestaurant },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ];
+    const byDayPipeline = [
+      { $match: matchRestaurant },
+      {
+        $addFields: {
+          date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }
+        }
+      },
+      {
+        $group: {
+          _id: { date: '$date', status: '$status' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.date': -1 } },
+      { $limit: days * 5 }
+    ];
+
+    const [byStatusResult, byDayResult] = await Promise.all([
+      db.collection('orders').aggregate(byStatusPipeline).toArray(),
+      db.collection('orders').aggregate(byDayPipeline).toArray()
+    ]);
+
+    const byStatus = {};
+    VALID_STATUSES.forEach(s => { byStatus[s] = 0; });
+    byStatusResult.forEach((r) => { byStatus[r._id] = r.count; });
+
+    const dayMap = {};
+    byDayResult.forEach((r) => {
+      const d = r._id.date;
+      const st = r._id.status;
+      if (!dayMap[d]) {
+        dayMap[d] = { date: d, total: 0, byStatus: {} };
+        VALID_STATUSES.forEach(s => { dayMap[d].byStatus[s] = 0; });
+      }
+      dayMap[d].total += r.count;
+      dayMap[d].byStatus[st] = (dayMap[d].byStatus[st] || 0) + r.count;
+    });
+    const byDay = Object.values(dayMap).sort((a, b) => b.date.localeCompare(a.date));
+
+    return res.json({ byStatus, byDay });
+  } catch (err) {
+    console.error('Restaurant orders summary error', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { db } = await connect();
@@ -136,7 +218,12 @@ router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
         { $sort: { orderCount: -1 } },
         { $limit: 10 }
       ];
-      result = await db.collection('orders').aggregate(pipeline).explain('executionStats');
+      result = await db.command({
+        aggregate: 'orders',
+        pipeline,
+        cursor: {},
+        explain: true
+      });
     } else if (queryName === 'top_dishes') {
       const pipeline = [
         { $match: { status: { $ne: 'cancelled' } } },
@@ -145,7 +232,12 @@ router.get('/explain', requireAuth, requireAdmin, async (req, res) => {
         { $sort: { totalQuantity: -1 } },
         { $limit: 10 }
       ];
-      result = await db.collection('orders').aggregate(pipeline).explain('executionStats');
+      result = await db.command({
+        aggregate: 'orders',
+        pipeline,
+        cursor: {},
+        explain: true
+      });
     } else if (queryName === 'restaurants_list') {
       const cursor = db.collection('restaurants').find({}).sort({ 'rating.avg': -1 }).limit(20);
       result = await cursor.explain('executionStats');
