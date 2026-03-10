@@ -122,7 +122,13 @@ router.get('/', async (req, res) => {
     }
 
     if (category) {
-      query.categories = category;
+      const categoryParam = String(category).trim();
+      let categoryValue = categoryParam;
+      if (!ObjectId.isValid(categoryParam)) {
+        const catDoc = await db.collection('categories').findOne({ id: categoryParam });
+        if (catDoc && catDoc._id) categoryValue = catDoc._id.toString();
+      }
+      query.categories = categoryValue;
     }
 
     if (lat && lng) {
